@@ -1,15 +1,19 @@
 import os
 import time
 from io import BytesIO
-from typing import List
+from typing import List, Optional
 from pathlib import Path
+import uuid
 
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types as gt
 from google.genai.errors import ClientError
 from PIL import Image
-import streamlit as st
+
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 
 
 # Config & client
@@ -24,19 +28,37 @@ client = genai.Client(api_key=API_KEY)
 
 OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
-COMPOSITE_IMAGE_PATH = OUTPUT_DIR / "room_with_light.png"
-VIDEO_OUTPUT_PATH = OUTPUT_DIR / "room_with_light_360.mp4"
 
 
-
-# SYSTEM INSTRUCTIONS
+# System instruction
 
 IMAGE_SYSTEM_INSTRUCTION = """
-You are a STRICT, RULE-BASED virtual interior lighting try-on engine.
+You are a STRICT, RULE-BASED  and an EXPERT virtual interior lighting try-on engine.
+
+Overall behavior:
+- You are a STRICT, RULE-BASED virtual try-on engine for lights,lamps/ any type of lights.
+- You prioritize physical realism, product category correctness, and scene consistency over creativity.
+- You must not ignore or reinterpret these rules.
 
 Inputs:
 - Image 1: a REAL photograph of a room. This must remain the base scene.
 - Images 2..N: product photos of lights / lamps / chandeliers. These are the objects to insert into the room.
+
+Your job:
+1. KEEP the original room structure, camera angle, framing, and furniture layout exactly as in Image 1.
+2. INSERT the light products from the product photos into the room in realistic, physically possible positions.
+3. You MUST NOT change the camera or composition of Image 1:
+   - Do NOT crop, zoom in, zoom out, pan, rotate, or change the field of view.
+   - The output image must show the room from the same viewpoint and framing as Image 1.
+4. Only adjust LOCAL lighting where necessary so the new fixtures look naturally integrated
+   (shadows, highlights, reflections near the lights), but do NOT globally relight or restyle the whole room.
+5. DO NOT remove, redesign, or hide existing objects in the room (stairs, plants, windows, walls, floors, ceilings, furniture, etc.).
+
+
+Before deciding final placement, internally consider:
+- Where are existing focal points (sofa, bed, TV, table, stairs, plants, etc.)?
+- Which walls or ceiling areas are free and suitable for mounting?
+- How many lights will feel balanced without overcrowding the scene?
 
 Non-negotiable camera & framing rules:
 - You MUST KEEP the original room framing exactly as in Image 1.
@@ -57,10 +79,10 @@ Category & mounting rules:
   - Must remain a table/desk lamp sitting on a HORIZONTAL SURFACE (table, desk, console, shelf).
 - You are NOT allowed to convert one type into another (e.g. floor lamp → ceiling lamp).
 
-Scene preservation rules:
+Scene Preservation rules:
 - Keep the room layout, structure, furniture, walls, floors, ceilings, windows, and stairs exactly as in Image 1.
 - Do NOT remove, redesign, hide, or replace existing objects.
-- Do NOT hallucinate new furniture, walls, or architectural features.
+- Do NOT hallucinate new furniture, walls or architectural features.
 - Do NOT invent extra lights or products that were not provided.
 
 Placement rules:
@@ -71,24 +93,23 @@ Placement rules:
 Lighting rules:
 - Match lighting, shadows, and reflections locally around the new fixtures so they look integrated.
 - Do NOT globally restyle or relight the entire room; preserve the original mood and color palette as much as possible.
-
-If the user request conflicts with physical reality, follow these rules first and choose the most realistic interpretation.
 """.strip()
 
 
-
-# FUNCTIONS 
-
+# -----------------------------
+# 2. Core generation functions
+# -----------------------------
 def generate_room_with_light(
     room_path: Path,
-    light_paths: list[Path],
+    light_paths: List[Path],
     out_path: Path,
-) -> Image.Image:
+    placement_prompt: Optional[str] = None,
+):
     """
-    Step 1: Use Gemini 2.5 Flash Image ("Nano Banana") to generate
-    a composite image: user's room + chosen light(s).
+    Use gemini-2.5-flash-image to generate a composite image:
+    user's room + chosen light(s).
+    Returns: (composite_img, gemini_image) where gemini_image is used for Veo.
     """
-
     if not room_path.exists():
         raise FileNotFoundError(f"Room image not found: {room_path}")
 
@@ -98,11 +119,10 @@ def generate_room_with_light(
     room_img = Image.open(room_path).convert("RGB")
     light_images = [Image.open(p).convert("RGB") for p in light_paths]
 
-    # USER PROMPT – lightweight, all heavy rules live in system_instruction
-    user_prompt = """
+    base_prompt = """
     Install these light products into this room in the most realistic way.
 
-    Follow these constraints:
+    Constraints:
     - Keep the exact same framing and camera view as the room photo.
     - Do NOT crop or zoom; show the room exactly as in the original image.
     - Use the product image(s) only as the design of the fixtures.
@@ -110,7 +130,9 @@ def generate_room_with_light(
       (floor lamp on the floor, ceiling lamp on the ceiling, wall lamp on the wall, etc.).
     """.strip()
 
-    # GenerateContentConfig with system_instruction
+    if placement_prompt:
+        base_prompt += f"\n\nUser placement instruction:\n{placement_prompt}"
+
     config = gt.GenerateContentConfig(
         system_instruction=IMAGE_SYSTEM_INSTRUCTION,
         response_modalities=["IMAGE"],
@@ -119,7 +141,7 @@ def generate_room_with_light(
         candidate_count=1,
     )
 
-    contents = [user_prompt, room_img, *light_images]
+    contents = [base_prompt, room_img, *light_images]
 
     response = client.models.generate_content(
         model="gemini-2.5-flash-image",
@@ -130,18 +152,26 @@ def generate_room_with_light(
     composite_img = None
     gemini_image = None
 
-    for part in response.parts:
+    # New google-genai responses usually have "candidates", but also expose .parts
+    parts = getattr(response, "parts", None)
+    if parts is None and getattr(response, "candidates", None):
+        parts = response.candidates[0].content.parts
+
+    if not parts:
+        raise RuntimeError("No image parts returned from gemini-2.5-flash-image")
+
+    for part in parts:
         if getattr(part, "inline_data", None) is not None:
-            gemini_image =  part.as_image()
             raw_bytes = part.inline_data.data
             composite_img = Image.open(BytesIO(raw_bytes)).convert("RGB")
+            gemini_image = part.as_image()
             break
 
     if composite_img is None or gemini_image is None:
         raise RuntimeError("No image returned from gemini-2.5-flash-image")
 
     composite_img.save(out_path)
-    print(f"[IMAGE] Saved composite VTO frame to: {out_path}")
+    print(f"[IMAGE] Saved composite frame to: {out_path}")
     return composite_img, gemini_image
 
 
@@ -150,195 +180,176 @@ def generate_360_video_from_image(
     out_path: Path,
 ):
     """
-    Step 2: Use Veo 3.1 via Gemini API to generate a short '360-ish' room video
+    Use Veo 3.1 via Gemini API to generate a short 360-style room video
     starting from the composite image as the first frame.
     """
-
-    # Veo 3.1 text+image → video
     video_prompt = """
     A smooth, slow 8-second 360-degree camera move inside this exact room interior.
 
     The video should:
     - Start from the same perspective as the input frame.
-    - Slowly move / orbit in a subtle way, revealing more of the room lights, furniture and decore.
-    - Keep the installed light fixtures clearly visible and fixed in spaces across the move.
-    - Do NOT change the design, category, or mounting type of the lights.
-    - Do NOT change the furniture, walls, or layout of the room.
-    - Maintain consistent lighting, shadows, and reflections based on the input frame.
+    - Slowly orbit in a subtle way, revealing more of the room specifically the lights installed[composited].
+    - Keep the installed light fixtures clearly visible and fixed in space across the move.
+    - Do NOT change the design,category or mounting type of the lights.
+    - Do NOT change the furniture, walls, or layout.
+    - Maintain consistent lighting,shadows and reflections based on the input frame.
     - Use a stable, cinematic camera path (no wild shaking, no cuts).
     - 16:9 aspect ratio, 720p or 1080p if possible.
     """.strip()
 
-    # create a google.genai.types.Image from file
-    
     operation = client.models.generate_videos(
         model="veo-3.1-generate-preview",
         prompt=video_prompt,
-        image=gemini_image,  
+        image=gemini_image,
     )
 
-    # Long-running op 
     while not operation.done:
         print("[VIDEO] Waiting for video generation to complete...")
         time.sleep(10)
         operation = client.operations.get(operation)
 
     video = operation.response.generated_videos[0]
+
+    # Download the MP4
     client.files.download(file=video.video)
     video.video.save(str(out_path))
     print(f"[VIDEO] Saved Veo video to: {out_path}")
 
 
 
-# STREAMLIT UI 
+# 3. FastAPI app
 
-def main():
-    st.set_page_config(
-        page_title="Room Lighting Virtual Try-On",
-        layout="wide",
-    )
+app = FastAPI(
+    title="Room Lighting Video Virtual Try-On",
+    description="Upload a room photo + lights, get back a 360° Veo video.",
+    version="1.0.0",
+)
 
-    st.title("Room Lighting Video Try-On ")
-    st.write(
-        "Upload a room photo and one or more light product photos. "
-        "Wait for a video try-on tobe generated "
-        
-    )
+# CORS so your HTML can call this from localhost
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],   # tighten later if needed
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    # Step 1 – Upload room photo
-    st.subheader("Step 1 Upload Room Photo")
-    room_file = st.file_uploader(
-        "Room photograph (JPG/PNG)",
-        type=["jpg", "jpeg", "png"],
-        key="room_file",
-    )
 
-    room_preview = None
-    if room_file is not None:
-        try:
-            room_preview = Image.open(room_file).convert("RGB")
-            st.image(room_preview, caption="Room Image", use_column_width=True)
-        except Exception as e:
-            st.error(f"Failed to load room image: {e}")
-            room_preview = None
+@app.post("/v1/lighting-tryon")
+async def lighting_tryon(
+    room: UploadFile = File(..., description="Room photograph (JPG/PNG)"),
+    lights: List[UploadFile] = File(..., description="One or more light product photos (JPG/PNG)"),
+    placement_prompt: Optional[str] = Form(None),
+):
+    """
+    1) Save uploads
+    2) Gemini 2.5 → composite image
+    3) Veo 3.1 → video
+    4) Return URLs
+    """
+    if room.content_type not in ("image/jpeg", "image/png"):
+        raise HTTPException(status_code=400, detail="Room must be JPEG or PNG")
 
-    # Step 2 – Upload light product images
-    st.subheader("Step 2 Upload Light Product Image(s)")
-    light_files = st.file_uploader(
-        "Light / lamp / chandelier product photos (one or more)",
-        type=["jpg", "jpeg", "png"],
-        accept_multiple_files=True,
-        key="light_files",
-    )
+    if not lights:
+        raise HTTPException(status_code=400, detail="At least one light image is required")
 
-    light_previews: List[Image.Image] = []
-    if light_files:
-        cols = st.columns(3)
-        idx = 0
-        for f in light_files:
-            try:
-                img = Image.open(f).convert("RGB")
-                light_previews.append(img)
-                with cols[idx % 3]:
-                    st.image(img, caption=f"Light {idx + 1}", use_column_width=True)
-                idx += 1
-            except Exception as e:
-                st.warning(f"Failed to load one product image: {e}")
+    for lf in lights:
+        if lf.content_type not in ("image/jpeg", "image/png"):
+            raise HTTPException(status_code=400, detail="All light files must be JPEG or PNG")
 
-    st.subheader("Step 3 Generate Composite + Video")
+    job_id = uuid.uuid4().hex
 
-    disabled = not (room_file is not None and light_files and len(light_files) > 0)
+    room_path = OUTPUT_DIR / f"{job_id}_room.png"
+    light_paths: List[Path] = []
+    composite_path = OUTPUT_DIR / f"{job_id}_room_with_light.png"
+    video_path = OUTPUT_DIR / f"{job_id}_room_with_light_360.mp4"
 
-    if disabled:
-        st.info("Upload a room image and at least one light image to enable generation.")
+    # Save room
+    try:
+        room_bytes = await room.read()
+        with open(room_path, "wb") as f:
+            f.write(room_bytes)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save room image: {e}")
 
-    if st.button("🚀 Generate", disabled=disabled):
-        # 1) Save room to disk
-        try:
-            room_file.seek(0)
-            room_bytes = room_file.read()
-            ui_room_path = OUTPUT_DIR / "ui_room_upload.png"
-            with open(ui_room_path, "wb") as f:
-                f.write(room_bytes)
-        except Exception as e:
-            st.error(f"Failed to save room image to disk: {e}")
-            return
+    # Save lights
+    try:
+        for idx, lf in enumerate(lights):
+            light_bytes = await lf.read()
+            lp = OUTPUT_DIR / f"{job_id}_light_{idx + 1}.png"
+            with open(lp, "wb") as f:
+                f.write(light_bytes)
+            light_paths.append(lp)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save light image: {e}")
 
-        # 2) Save lights to disk
-        ui_light_paths: list[Path] = []
-        for idx, lf in enumerate(light_files):
-            try:
-                lf.seek(0)
-                light_bytes = lf.read()
-                lp = OUTPUT_DIR / f"ui_light_{idx + 1}.png"
-                with open(lp, "wb") as f:
-                    f.write(light_bytes)
-                ui_light_paths.append(lp)
-            except Exception as e:
-                st.error(f"Failed to save light image {idx + 1} to disk: {e}")
-                return
-
-        # Step 1: composite image (exact same function)
-        try:
-            with st.spinner("Generating composite image..."):
-                composite_img, gemini_image = generate_room_with_light(
-                    room_path=ui_room_path,
-                    light_paths=ui_light_paths,
-                    out_path=COMPOSITE_IMAGE_PATH,
-                )
-        except ClientError as ce:
-            st.error(f"Gemini API error while generating composite image: {ce}")
-            return
-        except Exception as e:
-            st.error(f"Unexpected error while generating composite image: {e}")
-            return
-
-        st.success("Composite room and lights image generated.")
-        st.image(composite_img, caption="Room with Installed Lights", use_container_width=True)
-
-        # Download composite
-        img_buf = BytesIO()
-        composite_img.save(img_buf, format="PNG")
-        img_buf.seek(0)
-        st.download_button(
-            label="Download composite as PNG",
-            data=img_buf,
-            file_name="room_with_light.png",
-            mime="image/png",
+    # Step 1: composite
+    try:
+        _, gemini_image = generate_room_with_light(
+            room_path=room_path,
+            light_paths=light_paths,
+            out_path=composite_path,
+            placement_prompt=placement_prompt,
+        )
+    except ClientError as ce:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Gemini API error while generating composite image: {ce}",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unexpected error while generating composite image: {e}",
         )
 
-        # Step 2: 360° video 
-        video_success = False
-        try:
-            with st.spinner("Generating video ..."):
-                generate_360_video_from_image(
-                gemini_image=gemini_image,
-                out_path=VIDEO_OUTPUT_PATH,
-                )
+    # Step 2: video
+    try:
+        generate_360_video_from_image(
+            gemini_image=gemini_image,
+            out_path=video_path,
+        )
+    except ClientError as ce:
+        return JSONResponse(
+            status_code=502,
+            content={
+                "job_id": job_id,
+                "status": "partial_success",
+                "message": f"Composite generated but Veo video failed: {ce}",
+                "composite_image_url": f"/results/{job_id}/image",
+                "video_url": None,
+            },
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "job_id": job_id,
+                "status": "partial_success",
+                "message": f"Composite generated but video error: {e}",
+                "composite_image_url": f"/results/{job_id}/image",
+                "video_url": None,
+            },
+        )
 
-                
-                video_success = True
-        except ClientError as ce:
-            st.error(f"Veo API error while generating video: {ce}")
-        except Exception as e:
-            st.error(f"Unexpected error while generating video: {e}")
-            video_success = False
-
-        if video_success and VIDEO_OUTPUT_PATH.exists():
-            with open(VIDEO_OUTPUT_PATH, "rb") as vf:
-                video_bytes = vf.read()
-
-            st.success("360° video generated.")
-            st.video(video_bytes)
-            st.download_button(
-                label="Download 360° video (MP4)",
-                data=video_bytes,
-                file_name="room_with_light_360.mp4",
-                mime="video/mp4",
-            )
-        else:
-            st.info("Video file was not generated or could not be read. Check terminal logs for details.")
+    return {
+        "job_id": job_id,
+        "status": "success",
+        "composite_image_url": f"/results/{job_id}/image",
+        "video_url": f"/results/{job_id}/video",
+    }
 
 
-if __name__ == "__main__":
-    main()
+@app.get("/results/{job_id}/image")
+def get_composite_image(job_id: str):
+    path = OUTPUT_DIR / f"{job_id}_room_with_light.png"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Composite image not found")
+    return FileResponse(path, media_type="image/png", filename="room_with_light.png")
+
+
+@app.get("/results/{job_id}/video")
+def get_video(job_id: str):
+    path = OUTPUT_DIR / f"{job_id}_room_with_light_360.mp4"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Video not found")
+    return FileResponse(path, media_type="video/mp4", filename="room_with_light_360.mp4")
