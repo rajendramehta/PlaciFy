@@ -1,5 +1,9 @@
-google-genai
+flask
+flask-cors
 python-dotenv
 Pillow
+google-genai
+requests
 gunicorn
+
 
