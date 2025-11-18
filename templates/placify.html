@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Placify AI - Virtual Product Try-on</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script>document.documentElement.classList.add('dark');</script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        input[type="file"] { display: none; }
+
+        @keyframes agent-pulse {
+          0%, 100% { stroke-width: 2; opacity: 0.3; }
+          50% { stroke-width: 4; opacity: 0.8; }
+        }
+        .agent-pulse-ring { animation: agent-pulse 3s ease-in-out infinite; }
+
+        .loader-bar-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 96px;
+        }
+        .loader-bar {
+            width: 10px;
+            height: 40px;
+            background-color: #6366F1;
+            border-radius: 4px;
+            margin: 0 4px;
+            animation: loader-pulse 1.2s infinite ease-in-out;
+        }
+        .loader-bar:nth-child(2) { animation-delay: 0.2s; }
+        .loader-bar:nth-child(3) { animation-delay: 0.4s; }
+
+        @keyframes loader-pulse {
+            0%, 80%, 100% { transform: scaleY(0.4); opacity: 0.5; }
+            40% { transform: scaleY(1); opacity: 1; }
+        }
+
+        .loader { display: none; }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-200 min-h-full flex items-center justify-center py-8 px-4 sm:px-6 lg:px-8">
+    
+    <div class="max-w-7xl w-full bg-gray-800 rounded-2xl shadow-2xl p-8 lg:p-12 space-y-8 lg:grid lg:grid-cols-5 lg:gap-12 lg:space-y-0">
+        
+        <!-- LEFT: Controls -->
+        <div class="lg:col-span-2 space-y-8">
+            <div class="flex items-center space-x-3">
+                <svg class="w-10 h-10 text-indigo-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M3 8.25V18a2.25 2.25 0 002.25 2.25h13.5A2.25 2.25 0 0021 18V8.25m-18 0V6a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 6v2.25m-18 0h18M5.25 6H.75a.75.75 0 00-.75.75v10.5a.75.75 0 00.75.75h4.5M23.25 6h-4.5a.75.75 0 00-.75.75v10.5a.75.75 0 00.75.75h4.5M12 18.75a.75.75 0 00.75-.75V6.75a.75.75 0 00-.75-.75a.75.75 0 00-.75.75v11.25a.75.75 0 00.75.75z" />
+                </svg>
+                <h1 class="text-3xl font-bold text-white">Placify AI</h1>
+            </div>
+            
+            <p class="text-md text-gray-400">
+                Virtually place any product in your space. Upload your room, the product, and give me a placement command.
+            </p>
+
+            <div class="space-y-6">
+                <!-- Room Upload -->
+                <div class="space-y-3">
+                    <label class="block text-lg font-semibold text-white">
+                        1. Your Space
+                    </label>
+                    <label for="room-upload" class="group w-full h-32 bg-gray-700 border-2 border-dashed border-gray-600 rounded-lg flex items-center justify-center cursor-pointer hover:border-indigo-500 hover:bg-gray-600 transition-colors relative overflow-hidden">
+                        <input id="room-upload" name="room-upload" type="file" accept="image/*">
+                        <!-- <div id="room-preview-container" class="hidden w-full h-full p-2">
+                             <img id="room-preview" alt="Room preview" class="w-full h-full object-cover rounded-md">
+                        </div> -->
+                        <div id="room-preview-container" class="hidden w-full h-full p-2 relative">
+                             <img id="room-preview" class="w-full h-full object-cover rounded-md">
+                             <button id="room-remove-btn"
+                                class="absolute top-2 right-2 bg-red-600 text-white px-2 py-1 rounded-md text-sm hover:bg-red-700">
+                                REMOVE
+                            </button>
+                        </div>
+                        <div id="room-upload-prompt" class="w-full h-full">
+                            <img src="https://placehold.co/400x250/1F2937/4B5563?text=Upload+Your+Space" class="w-full h-full object-cover rounded-lg opacity-70 group-hover:opacity-100 transition-opacity" alt="Upload room photo">
+                        </div>
+                    </label>
+                </div>
+
+                <!-- Product Upload -->
+                <div class="space-y-3">
+                    <label class="block text-lg font-semibold text-white">
+                        2. The Product
+                    </label>
+                    <label for="product-upload" class="group w-full h-32 bg-gray-700 border-2 border-dashed border-gray-600 rounded-lg flex items-center justify-center cursor-pointer hover:border-indigo-500 hover:bg-gray-600 transition-colors relative overflow-hidden">
+                        <input id="product-upload" name="product-upload" type="file" accept="image/*">
+                        <!-- <div id="product-preview-container" class="hidden w-full h-full p-2">
+                             <img id="product-preview" alt="Product preview" class="w-full h-full object-cover rounded-md">
+                        </div> -->
+                        <div id="product-preview-container" class="hidden w-full h-full p-2 relative">
+                             <img id="product-preview" class="w-full h-full object-cover rounded-md">
+                             <button id="product-remove-btn"
+                                class="absolute top-2 right-2 bg-red-600 text-white px-2 py-1 rounded-md text-sm hover:bg-red-700">
+                                REMOVE
+                             </button>
+                        </div>
+                        <div id="product-upload-prompt" class="w-full h-full">
+                            <img src="https://placehold.co/400x250/1F2937/4B5563?text=Upload+Product+Photo" class="w-full h-full object-cover rounded-lg opacity-70 group-hover:opacity-100 transition-opacity" alt="Upload product photo">
+                        </div>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Prompt -->
+            <div class="space-y-3">
+                <label for="prompt-input" class="block text-lg font-semibold text-white">
+                    3. Placement Command
+                </label>
+                <input id="prompt-input" name="prompt" type="text" required class="w-full px-4 py-3 bg-gray-700 border border-gray-600 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-lg" placeholder="e.g., 'Hang this art on the back wall'">
+            </div>
+
+            <!-- Generate Button -->
+            <div>
+                <button id="generate-btn" class="w-full flex items-center justify-center py-3 px-4 rounded-lg shadow-sm text-lg font-semibold text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-800 focus:ring-indigo-500 transition-colors">
+                    <svg class="w-6 h-6 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L1.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.25 12l.813 2.846a4.5 4.5 0 01-3.09 3.09L15 18.75l-.813-2.846a4.5 4.5 0 013.09-3.09L18.25 12zM18.25 12l-.813-2.846a4.5 4.5 0 013.09-3.09L21 5.25l-.813 2.846a4.5 4.5 0 01-3.09 3.09L18.25 12z" />
+                    </svg>
+                    Generate Vision Video
+                </button>
+            </div>
+        </div>
+        
+        <!-- RIGHT: Canvas -->
+        <div class="lg:col-span-3 w-full h-full min-h-[400px] lg:min-h-[600px] bg-gray-900 rounded-lg flex items-center justify-center relative overflow-hidden">
+            <!-- Result Video -->
+            <div id="result-container" class="hidden w-full h-full">
+                <video id="result-video" class="w-full h-full object-contain" controls></video>
+            </div>
+
+            <!-- Default Placeholder -->
+            <div id="default-placeholder" class="text-center text-gray-500 flex flex-col items-center justify-center">
+                <svg class="w-32 h-32" fill="none" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+                    <circle cx="50" cy="50" r="10" class="text-indigo-500" fill="currentColor"/>
+                    <circle cx="50" cy="50" r="20" stroke="currentColor" class="agent-pulse-ring text-indigo-600" style="animation-delay: 0s;"/>
+                    <circle cx="50" cy="50" r="30" stroke="currentColor" class="agent-pulse-ring text-indigo-700" style="animation-delay: 1s;"/>
+                </svg>
+                <p class="mt-4 text-lg">Your generated placement video will appear here</p>
+            </div>
+            
+            <!-- Loading Indicator -->
+            <div id="loader" class="hidden absolute inset-0 bg-gray-900 bg-opacity-75 flex-col items-center justify-center p-6 space-y-4 z-10">
+                <div class="loader-bar-container">
+                    <div class="loader-bar"></div>
+                    <div class="loader-bar"></div>
+                    <div class="loader-bar"></div>
+                </div>
+                <p class="text-gray-300 text-lg">Placify AI is generating your video... This may take a moment.</p>
+            </div>
+            
+            <!-- Error Message -->
+            <div id="error-message" class="hidden absolute top-8 left-8 right-8 p-4 bg-red-800 text-red-100 rounded-lg text-center z-20 transition-all duration-300 transform opacity-0 -translate-y-4"></div>
+        </div>
+    </div>
+
+    <script>
+        // -----------------------------
+        // 0. Backend config
+        // -----------------------------
+        const BACKEND_BASE_URL = "http://localhost:8000";
+
+        // -----------------------------
+        // 1. DOM elements
+        // -----------------------------
+        const roomUpload = document.getElementById('room-upload');
+        const productUpload = document.getElementById('product-upload');
+        
+        const roomPreview = document.getElementById('room-preview');
+        const roomPreviewContainer = document.getElementById('room-preview-container');
+        const roomUploadPrompt = document.getElementById('room-upload-prompt');
+
+        const productPreview = document.getElementById('product-preview');
+        const productPreviewContainer = document.getElementById('product-preview-container');
+        const productUploadPrompt = document.getElementById('product-upload-prompt');
+        
+        const promptInput = document.getElementById('prompt-input');
+        const generateBtn = document.getElementById('generate-btn');
+        const loader = document.getElementById('loader');
+        const errorMessage = document.getElementById('error-message');
+        
+        const defaultPlaceholder = document.getElementById('default-placeholder');
+        const resultContainer = document.getElementById('result-container');
+        const resultVideo = document.getElementById('result-video');
+
+        const roomRemoveBtn = document.getElementById('room-remove-btn');
+        const productRemoveBtn = document.getElementById('product-remove-btn');
+
+        let roomFile = null;
+        let productFile = null;
+        let errorTimeout = null;
+
+        // -----------------------------
+        // 2. File preview
+        // -----------------------------
+        roomUpload.addEventListener('change', (e) => {
+            if (e.target.files && e.target.files[0]) {
+                roomFile = e.target.files[0];
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    roomPreview.src = event.target.result;
+                    roomPreviewContainer.classList.remove('hidden');
+                    roomUploadPrompt.classList.add('hidden');
+                };
+                reader.readAsDataURL(roomFile);
+            }
+        });
+
+        productUpload.addEventListener('change', (e) => {
+            if (e.target.files && e.target.files[0]) {
+                productFile = e.target.files[0];
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    productPreview.src = event.target.result;
+                    productPreviewContainer.classList.remove('hidden');
+                    productUploadPrompt.classList.add('hidden');
+                };
+                reader.readAsDataURL(productFile);
+            }
+        });
+
+        roomRemoveBtn.addEventListener('click', () => {
+            roomFile = null;
+            roomUpload.value = "";
+            roomPreview.src = "";
+            roomPreviewContainer.classList.add('hidden');
+            roomUploadPrompt.classList.remove('hidden');
+        });
+
+        productRemoveBtn.addEventListener('click', () => {
+            productFile = null;
+            productUpload.value = "";
+            productPreview.src = "";
+            productPreviewContainer.classList.add('hidden');
+            productUploadPrompt.classList.remove('hidden');
+        });
+
+        generateBtn.addEventListener('click', handleGeneration);
+
+        // -----------------------------
+        // 3. UI helpers
+        // -----------------------------
+        function showLoading(isLoading) {
+            if (isLoading) {
+                loader.classList.remove('hidden');
+                loader.classList.add('flex');
+                generateBtn.disabled = true;
+                generateBtn.classList.add('opacity-50', 'cursor-not-allowed');
+            } else {
+                loader.classList.add('hidden');
+                loader.classList.remove('flex');
+                generateBtn.disabled = false;
+                generateBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+            }
+        }
+
+        function showError(message) {
+            clearTimeout(errorTimeout);
+            if (!message) {
+                hideError();
+                return;
+            }
+            errorMessage.textContent = message;
+            errorMessage.classList.remove('hidden');
+            setTimeout(() => {
+                errorMessage.classList.remove('opacity-0', '-translate-y-4');
+            }, 10);
+            errorTimeout = setTimeout(() => { hideError(); }, 5000);
+        }
+
+        function hideError() {
+            errorMessage.classList.add('opacity-0', '-translate-y-4');
+            clearTimeout(errorTimeout);
+            setTimeout(() => {
+                errorMessage.classList.add('hidden');
+            }, 300);
+        }
+
+        // -----------------------------
+        // 4. Main handler – call FastAPI, show VIDEO only
+        // -----------------------------
+        async function handleGeneration() {
+            if (!roomFile) {
+                showError("Please upload your space photo.");
+                return;
+            }
+            if (!productFile) {
+                showError("Please upload a product photo.");
+                return;
+            }
+            const prompt = promptInput.value.trim();
+            if (!prompt) {
+                showError("Please enter a placement command.");
+                return;
+            }
+
+            showLoading(true);
+            showError(null);
+            defaultPlaceholder.classList.add('hidden');
+            resultContainer.classList.add('hidden');
+            resultVideo.removeAttribute('src');
+
+            try {
+                const formData = new FormData();
+                formData.append('room', roomFile);
+                formData.append('lights', productFile);
+                formData.append('placement_prompt', prompt);
+
+                // 1) trigger backend
+                const resp = await fetch(`${BACKEND_BASE_URL}/v1/lighting-tryon`, {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                if (!resp.ok) {
+                    const text = await resp.text();
+                    throw new Error(`Backend error ${resp.status}: ${text}`);
+                }
+
+                const data = await resp.json();
+                const status = data.status || 'unknown';
+                const videoPath = data.video_url;
+
+                if (!videoPath) {
+                    throw new Error(`Backend returned status "${status}" but no video_url.`);
+                }
+
+                // 2) download MP4
+                const videoResp = await fetch(`${BACKEND_BASE_URL}${videoPath}`);
+                if (!videoResp.ok) {
+                    const text = await videoResp.text();
+                    throw new Error(`Failed to download video (${videoResp.status}): ${text}`);
+                }
+
+                const blob = await videoResp.blob();
+                const videoUrl = URL.createObjectURL(blob);
+
+                // 3) show video
+                resultVideo.src = videoUrl;
+                resultContainer.classList.remove('hidden');
+                try { resultVideo.play().catch(() => {}); } catch (_) {}
+
+            } catch (err) {
+                console.error("Error during generation:", err);
+                showError(`An error occurred: ${err.message}`);
+                defaultPlaceholder.classList.remove('hidden');
+            } finally {
+                showLoading(false);
+            }
+        }
+    </script>
+</body>
+</html>
